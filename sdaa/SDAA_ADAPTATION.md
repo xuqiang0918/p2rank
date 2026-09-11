@@ -2,8 +2,8 @@
 
 ## 1. 结论
 
-p2rank 是预测蛋白配体结合位点的工具，纯 Java（Groovy + WEKA/FasterForest 随机森林）实现，
-代码中**没有 CUDA / GPU 计算路径**，不存在算子级、设备级适配内容。
+p2rank 是预测蛋白配体结合位点的 **CPU Java** 工具（Groovy + WEKA/FasterForest 随机森林），
+不依赖 CUDA / GPU，不存在算子级、设备级适配内容。
 
 本适配内容是「**在 LoongArch64 平台上可构建、可运行**」：
 
@@ -85,8 +85,8 @@ cd p2rank_2.5.1
 ./prank predict -f test_data/1fbl.pdb -o /data/application/xuqiang/p2rank_release_artifacts
 ```
 
-实测（`p2rank_2.5.1.tar.gz` 262 MB，JDK 17.0.5）：`Finished successfully in 6.720 seconds`，
-4 个口袋，`predictions.csv` 与源码构建版（2.6-alpha.7）逐字段一致。
+实测（`p2rank_2.5.1.tar.gz` 262 MB，JDK 17.0.5）：`Finished successfully in 6.814 seconds`
+（内部计算 5.095 s），4 个口袋，`predictions.csv` 与源码构建版（2.6-alpha.7）逐字段一致。
 
 下载页 `https://github.com/rdk/p2rank/releases`，当前最新为 2.6-alpha（`p2rank_2.6-alpha.tar.gz`）。
 
@@ -112,8 +112,11 @@ cd /data/application/xuqiang/p2rank && ./make.sh
 ```bash
 # 预测（进安装目录，用法即 README 的 `prank predict ...`）
 cd /data/application/xuqiang/p2rank/distro
-./prank predict -f test_data/1fbl.pdb -o /data/application/xuqiang/p2rank_test_artifacts
+./prank predict -f test_data/1fbl.pdb -o /data/application/xuqiang/p2rank_test_artifacts -threads 8
 ```
+
+`-threads` 需显式指定：默认取 `核数 + 1`（本机 128 核 → 129），单结构下反而更慢（见 5.4）。
+批量与其他子命令同样在命令行末尾追加该参数。
 
 用 `distro/prank`（生产启动器）而非仓库根的 `prank.sh`（开发启动器，需往仓库根拷 `misc/local-env.sh`）。
 **不要把它软链到 `/usr/local/bin`**：脚本用 `dirname "${BASH_SOURCE[0]}"` 定位自身目录，软链会让
@@ -121,7 +124,7 @@ cd /data/application/xuqiang/p2rank/distro
 
 ## 5. 结果
 
-构建产物：
+### 5.1 构建产物
 
 ```
 build/bin/p2rank.jar    3,053,844 B
@@ -129,19 +132,25 @@ build/classes           1139 个 .class
 distro/bin/p2rank.jar   同步产出
 ```
 
-预测 1fbl.pdb：
+### 5.2 预测结果
+
+预测 1fbl.pdb（`-threads 8`）：
 
 ```
 [INFO] Model - Loading model from directory (v3 format): distro/models/default
 [INFO] FeatureSetup - effectively enabled features: [chem, volsite, protrusion, bfactor, atom_table]
-[INFO] Dataset - processing dataset [1fbl.pdb] using 129 threads
+[INFO] Dataset - processing dataset [1fbl.pdb] using 8 threads
 [INFO] SingleLinkageClustering - LIGANDABLE POINTS: 47 / CLUSTERS: 7 / FILTERED CLUSTERS: 4
-[INFO] PocketPredictor - pocket 1 - surf_atoms: 40  points: 20  score: 9.8
-[INFO] PocketPredictor - pocket 2 - surf_atoms: 18  points: 10  score: 3.0
-[INFO] PocketPredictor - pocket 3 - surf_atoms: 15  points:  7  score: 2.9
-[INFO] PocketPredictor - pocket 4 - surf_atoms: 17  points:  5  score: 1.9
-[INFO] Console - Finished successfully in 0 hours 0 minutes 12.753 seconds.
+[INFO] PocketPredictor - pocket 1 - surf_atoms: 40   points:  20   score:    9.8
+[INFO] PocketPredictor - pocket 2 - surf_atoms: 18   points:  10   score:    3.0
+[INFO] PocketPredictor - pocket 3 - surf_atoms: 15   points:   7   score:    2.9
+[INFO] PocketPredictor - pocket 4 - surf_atoms: 17   points:   5   score:    1.9
+[INFO] Writable - predicting pockets finished in 0 hours 0 minutes 6.451 seconds
+[INFO] Console - Finished successfully in 0 hours 0 minutes 8.341 seconds.
 ```
+
+输出目录：`1fbl.pdb_predictions.csv` / `1fbl.pdb_residues.csv` / `params.txt` / `run.log` /
+`visualizations/`。`predictions.csv` 与默认线程数下（129）的产物 `diff` 结果一致。
 
 与官方 release 2.5.1（同一台 loongarch64 机器）对照：
 
@@ -158,16 +167,63 @@ surf_atom_ids 全部字段逐行一致。
 native 库：`FasterForest-2.13.0.jar` 不带 loongarch64 原生库（只有 x86_64 / windows），
 运行日志中无 `UnsatisfiedLinkError` 或 native 警告，预测正常完成。
 
-### 5.4 其他子命令
+### 5.3 其他子命令
+
+各命令均在 `distro` 目录下执行，末尾带 `-threads 8`。
 
 | 命令 | 输入 | 结果 |
 |---|---|---|
-| `predict <dataset.ds>`（批量） | `test_data/basic.ds`（2W83 + 1fbl） | 两结构的 predictions / residues 均产出，9.038 s |
-| `rescore <dataset.ds> -c rescore_2024` | `test_data/fpocket.ds`（4 个蛋白） | 输出 `*_rescored.csv`（含 old_rank / change 重排序），15.552 s |
-| `traineval -t <ds> -e <ds> -loop 1`（训练路径） | `test_data/test.ds`（5 个蛋白） | 训练 + 评估完成，输出 DCC / DSO / DPA 等指标，avg training time 1.181 s，总 11.986 s |
+| `predict <dataset.ds>`（批量） | `test_data/basic.ds`（2W83 + 1fbl） | 两结构的 predictions / residues 均产出，总 8.994 s（内部 7.131 s） |
+| `rescore <dataset.ds> -c rescore_2024` | `test_data/fpocket.ds`（4 个蛋白） | 输出 `*_rescored.csv`（含 old_rank / change 重排序），总 13.330 s（内部 10.951 s） |
+| `traineval -t <ds> -e <ds> -loop 1`（训练路径） | `test_data/test.ds`（5 个蛋白） | 训练 + 评估完成，输出 DCC / DSO / DPA 等指标，avg training time 1.097 s，总 12.109 s |
+
+dataset 走位置参数传入，不要用 `-f`：`-f test_data/test.ds` 会把 .ds 当单个结构文件加载，
+日志报 `Structure with no protein chain atoms!` 并产出空结果。
 
 训练命令用 `./prank.sh`（需临时拷 `misc/local-env.sh`，跑完删除），因为它设 `-Xmx31G`，
 而 `distro/prank` 固定 `-Xmx2048m`。traineval 输出落在 `distro/test_output/`（已被 `.gitignore` 忽略）。
+
+### 5.4 性能
+
+测试结构 `distro/test_data/1fbl.pdb`：**367 残基**（2 链）/ 蛋白原子 2902 / 结构原子 3294 /
+SAS 表面点 5168 / 暴露原子 1825，运行参数 `-threads 8`（日志 `processing dataset [1fbl.pdb]
+using 8 threads`）。
+
+吞吐按内部计算耗时 **6.451 s** 计（日志 `Finished successfully in 8.341 seconds`，其中含
+JVM 启动、类加载、模型反序列化）：
+
+| 口径 | 数值 |
+|---|---|
+| **残基吞吐** | **56.9 residues/s** |
+| **原子吞吐** | **450 atoms/s** |
+| 表面点吞吐 | 801 surface points/s |
+| 结构吞吐 | 0.155 structures/s；558 structures/h |
+
+同一台机器上官方 release 2.5.1 的对照（同为 1fbl，`predictions.csv` 与源码构建版逐行一致）：
+内部计算 **5.095 s**，与源码构建版 `-threads 8` 的 6.451 s 同一量级。
+
+线程数的影响：与代码、模型、特征无关（两者的模型 `model.zst` 完全一致，特征集同为
+`[chem, volsite, protrusion, bfactor, atom_table]`，表面点同为 5168）。单结构任务并行收益
+有限，线程数远超工作量时调度开销占主导。实测（同一结构，内部计算耗时）：
+
+| 配置 | 线程数 | 内部计算 |
+|---|---|---|
+| 2.6-alpha.7 默认 | 129（核数 + 1） | 10.904 s |
+| 2.6-alpha.7 `-threads 1` | 1 | 5.899 s |
+| 2.6-alpha.7 `-threads 8` | 8 | 5.303 s |
+| 2.6-alpha.7 `-threads 16` | 16 | 5.334 s |
+| 2.5.1 release（默认） | 129 | 4.601 ~ 5.474 s |
+
+批量（多结构）：`predict test_data/test.ds`（5 个蛋白），四种线程配置串行执行：
+
+| 配置 | 线程数 | 内部计算 | 总耗时 |
+|---|---|---|---|
+| 2.6-alpha.7 `-threads 1` | 1 | 8.985 s | 10.841 s |
+| 2.6-alpha.7 `-threads 8` | 8 | 5.850 s | 7.821 s |
+| 2.6-alpha.7 `-threads 16` | 16 | 5.315 s | 7.475 s |
+| 2.6-alpha.7 默认 | 129 | 5.821 s | 7.930 s |
+| 2.5.1 release `-threads 16` | 16 | 4.539 s | 6.177 s |
+| 2.5.1 release（默认） | 129 | 4.612 s | 6.542 s |
 
 ## 6. 已知限制
 
